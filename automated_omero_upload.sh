@@ -96,7 +96,7 @@ for WATCH_DIR in "${VALID_DIRS[@]}"; do
         continue
     fi
 
-    # Build find predicate for these suffixes: -iname "*.tif" -o -iname "*.czi" …
+    # Build find expression for these suffixes: -iname "*.tif" -o -iname "*.czi" …
     FIND_EXPR=()
     for s in "${SUFFIXES[@]}"; do
         FIND_EXPR+=( -iname "*${s}" -o )
@@ -173,11 +173,13 @@ for WATCH_DIR in "${VALID_DIRS[@]}"; do
     for meta in "${NEW_META[@]}"; do
         dir=$(dirname "$meta")
 
-        # 4b) in same dir, find any README file born <24 h
+        # 4b) in same dir, find any README file born <24 h, ordered newest first
         mapfile -t NEW_README < <(
             find "$dir" -maxdepth 1 -type f -iname "${README_FILE}" -print0 \
                 | xargs -0 stat --format=$'%n\t%W' \
-                | awk -F $'\t' '$2 > systime()-'"${TIME_SPAN}"' { print $1 }'
+                | awk -F $'\t' '$2 > systime()-'"${TIME_SPAN}"' { print $2 "\t" $1 }' \
+                | sort -nr \
+                | cut -f2
         )
 
         # 4c) only if we have both
@@ -200,13 +202,14 @@ for WATCH_DIR in "${VALID_DIRS[@]}"; do
                     -w="${ADMIN_PASS}" \
                     --sudo="${ADMIN_USER}"
 
+                # upload the file
                 echo "uploading '$file'"
                 original_id=$(sudo -u omero-server HOME="$(getent passwd omero-server | cut -d: -f6)" \
                     "${OMERO_BIN}" upload "$file")
-
+                # create a FileAnnotation from it
                 file_annotation=$(sudo -u omero-server HOME="$(getent passwd omero-server | cut -d: -f6)" \
                     "${OMERO_BIN}" obj new FileAnnotation file="$original_id")
-
+                # link it to the dataset
                 sudo -u omero-server HOME="$(getent passwd omero-server | cut -d: -f6)" \
                     "${OMERO_BIN}" obj new DatasetAnnotationLink \
                     parent=Dataset:"$dataset_id" child="$file_annotation"
@@ -214,10 +217,11 @@ for WATCH_DIR in "${VALID_DIRS[@]}"; do
 
             # upload the metadata JSON first
             upload_and_link "$meta"
-            # then upload each README
-            for readme in "${NEW_README[@]}"; do
-                upload_and_link "$readme"
-            done
+            # then upload only the newest README (first in sorted array)
+            if (( ${#NEW_README[@]} > 0 )); then
+                upload_and_link "${NEW_README[0]}"
+                echo "Uploaded (newest) README: ${NEW_README[0]}"
+            fi
         fi
     done
 done

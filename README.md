@@ -48,6 +48,8 @@ The script is written with the assumption that it is run on the system that is r
 
 In the same manner we assume usage in tandem with Metafold. The parsed metadata file is therefore `METADATA_FILE="elabftw-metadata.json"`. You can change this, but then you have to change the way the `dataset_id` and `ome_user` is parsed [here](./automated_omero_upload.sh#L129-130) and [here](./automated_omero_upload.sh#L185-186).
 
+Everything is logged to `LOGFILE="/var/log/omero_upload.log"`.
+
 ## Planned upcoming features
 
 - Decouple time-gated search of accompanying `README.html` and `elabftw-metadata.json`
@@ -60,6 +62,7 @@ In the same manner we assume usage in tandem with Metafold. The parsed metadata 
 
 - Kernel: 4.11+ (preferably 5.4+ for stability)
 - Coreutils: 8.31+
+- jq
 - NFS client: nfs-common with NFSv4.2 support
 - CIFS client: cifs-utils 6.8+
 
