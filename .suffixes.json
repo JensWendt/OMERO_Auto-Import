@@ -1,0 +1,9 @@
+{
+  "suffixes":[
+  ".lif",
+  ".czi",
+  ".tif*",
+  ".ome.tif*",
+  ".scn"
+  ]
+}
