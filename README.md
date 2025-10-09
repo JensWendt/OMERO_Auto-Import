@@ -91,3 +91,7 @@ https://github.com/WU-BIMAC/W-IDM_OmeroImporterPy
 - almost full functionality match
 - keeps a record of file paths that have already been imported --> independent of file metadata which might be tricky to get
 - the setup is a bit more complex with preparation of metadata.xlsx/.csv files
+
+## Disclaimer
+
+This script was developed with assistance of GitHub Copilot AI, namely model Claude Sonnet 4.
