@@ -214,7 +214,11 @@ or creates a missing object in the requested user/group context.
 - additional flags to set the time window
 - additional SQLite database containing imported paths and resulting OMERO Image IDs
 - Screen/Plate as import target
+- has a rigid Project>Dataset>Images directory structure
+- almost full functionality match
+- keeps a record of file paths that have already been imported --> independent of file metadata which might be tricky to get
+- the setup is a bit more complex with preparation of metadata.xlsx/.csv files
 
 ## Disclaimer
 
-This script was developed with assistance of GitHub Copilot AI, namely model Claude Sonnet 4.
+This script was developed with assistance of GitHub Copilot AI, namely model GPT-5.6 Luna.
