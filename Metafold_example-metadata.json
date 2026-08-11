@@ -1,0 +1,185 @@
+{
+  "Test": {
+    "label": "test für namespace",
+    "type": "text",
+    "value": "",
+    "required": false,
+    "position": 1
+  },
+  "Microscopy": {
+    "mode": {
+      "label": "Mode",
+      "type": "dropdown",
+      "value": "Airyscan Fast",
+      "required": true,
+      "position": 3,
+      "options": [
+        "Airyscan SR",
+        "Airyscan Fast",
+        "LSM Plus (DCV)",
+        "MPLX (Multiplex)",
+        "jDCV",
+        "Linear Unmixing (34Ch)"
+      ]
+    },
+    "laser_lines": {
+      "label": "Laser Lines (nm)",
+      "type": "multicheckbox",
+      "value": [
+        "488nm",
+        "561nm"
+      ],
+      "required": false,
+      "position": 4,
+      "options": [
+        "405nm",
+        "488nm",
+        "561nm",
+        "635nm"
+      ]
+    }
+  },
+  "Biological Sample": {
+    "dyes": {
+      "label": "Dyes",
+      "type": "text",
+      "value": "",
+      "required": false,
+      "position": 6
+    },
+    "fluorescent_proteins": {
+      "label": "Fluorescent Proteins",
+      "type": "text",
+      "value": "",
+      "required": false,
+      "position": 7
+    },
+    "organism": {
+      "label": "Organism",
+      "type": "dropdown",
+      "value": "Drosophila melanogaster",
+      "required": false,
+      "position": 8,
+      "options": [
+        "Homo sapiens",
+        "Mus musculus",
+        "Rattus norvegicus",
+        "Danio rerio",
+        "Drosophila melanogaster",
+        "Arabidopsis thaliana",
+        "Other"
+      ]
+    },
+    "Strain": {
+      "label": "Strain",
+      "type": "text",
+      "value": "Nostrin",
+      "required": false,
+      "position": 9
+    },
+    "Strain URL": {
+      "label": "Strain URL",
+      "type": "url",
+      "value": "https://flybase.org/reports/FBgn0259734.html",
+      "required": false,
+      "position": 10
+    },
+    "cell_type": {
+      "label": "Cell Type",
+      "type": "text",
+      "value": "",
+      "required": false,
+      "position": 11
+    },
+    "organism_part": {
+      "label": "Organism Part",
+      "type": "text",
+      "value": "",
+      "required": false,
+      "position": 12
+    },
+    "fixation": {
+      "label": "Fixation",
+      "type": "dropdown",
+      "value": "Live",
+      "required": true,
+      "position": 13,
+      "options": [
+        "Fixed",
+        "Live"
+      ]
+    },
+    "sample_type": {
+      "label": "Sample Type",
+      "type": "dropdown",
+      "value": "Cell Culture",
+      "required": false,
+      "position": 14,
+      "options": [
+        "Cell Culture",
+        "Tissue Sample",
+        "Tissue Section",
+        "Embryo",
+        "Preparation",
+        "Primary Cells",
+        "Other"
+      ]
+    },
+    "sample_description": {
+      "label": "Sample Description",
+      "type": "textarea",
+      "value": "",
+      "required": false,
+      "position": 15
+    },
+    "imaging_purpose": {
+      "label": "Imaging Purpose",
+      "type": "textarea",
+      "value": "",
+      "required": false,
+      "position": 16
+    },
+    "qwer_ID": {
+      "label": "qwer ID",
+      "type": "id_anchor",
+      "value": "",
+      "required": false,
+      "position": 17
+    },
+    "derived_from": {
+      "label": "Derived From (IDs)",
+      "type": "derived_from",
+      "value": [],
+      "required": false,
+      "position": 18
+    }
+  },
+  "provenance": {
+    "creator": {
+      "username": "Admin",
+      "email": "wwu@admin.de",
+      "affiliation": "lol",
+      "role": "Principal Investigator"
+    },
+    "group": {
+      "name": "System"
+    },
+    "createdAt": "2026-08-06T16:53:47.385Z",
+    "metafoldVersion": "1.0.0"
+  },
+  "metafold_integration": {
+    "created_at": "2026-08-06T16:53:48.772Z",
+    "local_path": "D:\\Projects\\AutoUpload_Test",
+    "external_links": {
+      "omero": {
+        "url": "https://omero-imaging.uni-muenster.de/webclient/?show=dataset-20528&group=1353",
+        "dataset_id": "20528",
+        "object_type": "dataset",
+        "user_name": "Ernst",
+        "group_name": "MiN - Münster Imaging Network",
+        "uploaded_at": "2026-08-06T16:53:48.772Z",
+        "status": "uploaded"
+      }
+    }
+  }
+}

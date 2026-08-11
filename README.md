@@ -1,93 +1,216 @@
-# Automated OMERO Import Script
+# Automated OMERO Import
 
-This is a bash script to automatically import Images (and certain files as FileAnnotations) from "watched" directories into OMERO Datasets. It is designed to run as cronjob.
+Automated OMERO Import is a two-stage Python workflow for importing recently
+created or copied image files from a watched directory tree into OMERO.
 
-It is designed to work with [Metafold](https://github.com/ThZobel/MetaFold), but can be adapted to work without it.
+1. `parser.py` scans a base directory, applies local import rules, derives an
+	 OMERO target for each eligible file, and writes an `import.json` transfer file.
+2. `OMERO_import.py` reads that transfer file, validates the requested OMERO
+	 users/groups, creates missing Projects and Datasets when needed, then imports
+	 each file into the resolved Dataset.
 
-## Features
+The workflow is designed for scheduled execution from PowerShell or another
+scheduler. It can derive import targets from a folder convention, from Metafold
+metadata sidecars, or from both.
 
-- Imports image files which have been newly created or copied into (sub)directories in the last 24h
-- Flexible import time intervals
-- Easily expandable list of watched/scanned directories
-- Customizable list of importable image file suffixes for each watched directory
-- Automatically parses target dataset and OMERO user from a `elabftw-metadata.json` file (from Metafold, but can be adapted)
-- Import via an OMERO admin user with `sudo` for the different OMERO users
-- Imports the `elabftw-metadata.json` and the `README.html` (both Metafold related) as FileAnnotation to the target OMERO Dataset
+## Current capabilities
 
-## What does it NOT do
+- Recursively scans one base directory for files created within the last 24 hours (configurable).
+- Uses hierarchical whitelist and blacklist rule files to control traversal and
+	eligible files.
+- Derives OMERO group, user, Project, and Dataset from the folder layout.
+- Uses `*-metadata.json` Metafold sidecars to override path-derived target metadata.
+- Supports Metafold fallback, sidecar-only, and sidecar-ignore modes.
+- Validates groups and users, creates missing Projects and Datasets, and imports
+	with an OMERO administrator account using `sudo` connections.
+- Writes parser logs and rotating importer logs; preserves OMERO CLI logs for
+	failed imports.
 
-- import Metadata (this is what Metafold is for in this context)
-- create Datasets (also happens in Metafold)
+## Repository contents
 
-## Installation
-
-- Copy the `automated_omero_import.sh` script onto your Linux machine which is running OMERO.server.
-- Create a `.watch-directory-list.json` wherever you please according to the sample provided in this repo. Then set the path as `WATCH_LIST_FILE` in the script parameters
-- Create a `credentials_auto_import.json` wherever you please according to the sample provided in this repo. Then set the path as `ADMIN_CRED_FILE` in the script parameters
-- Create the corresponding OMERO admin user (e.g. `auto_import`)
-- Create in eached 'watched' directory at the top level a `.suffixes.json` according to the sample provided in this repo. For the first directory in the sample `.watch-directory-list.json` this would be `/mnt/hive/Project_01/.suffixes.json`. If you want another name for this file, change it in the `SUFFIX_FILE` script parameter.
-- The script assumes you have a metadata file containing the target dataset Id and the OMERO username next to the files that are to be imported. If you use the script in tandem with Metafold this will be `elabftw-metadata.json` and automatically generated. You can change this, which is described in the last paragraph of [Details](#details)
-
-## Details
-
-The script is the matching piece for Metafold to enable an automatic import from Image files that have been deposited into the directories created by Metafold.
-
-The `.watch-directory-list.json` contains all directories that are being searched for newly created or newly copied files.
-
-Each directory in the list must contain a `.suffixes.json` at top level indicating which files are suitable for import. This allows for a fine-grained distinction of what to import, enabling use-cases e.g. HCS where only the companion file (\*.xml) needs to be imported and not every single .tif file. Changing the script parameter `SUFFIX_FILE` allows for a different file name.
-
-The directories are then being searched utilizing the `%W` birthtime stat metadata of each file to grab all newly created and newly copied files.
-
-The Image files must be accompanied by an `elabftw-metadata.json` file from Metafold, which gets parsed for the target OMERO dataset Id and the OMERO username of the user for whom the import happens.
-
-If a Metafold `README.html` is found on the same level as the `elabftw-metadata.json` both are uploaded as FileAnnotations on the target OMERO dataset. If not, this is skipped.
-
-The script assumes the standard `OMERO_BIN="/opt/omero/server/venv3/bin/omero"` and `CLIENT_DIR="/opt/omero/server/OMERO.server/lib/client"` if you installed OMERO somehow different you will need to adapt this in the script parameters. The `CLIENT_DIR` is only needed for the actual `omero import` command.
-
-The script is written with the assumption that it is run on the system that is running the OMERO.server and has external file shares mounted. Therefore `OMERO_HOST` is set as `localhost`, but can be changed.
-
-In the same manner we assume usage in tandem with Metafold. The parsed metadata file is therefore `METADATA_FILE="elabftw-metadata.json"`. You can change this, but then you have to change the way the `dataset_id` and `ome_user` is parsed [here](./automated_omero_upload.sh#L129-130) and [here](./automated_omero_upload.sh#L185-186).
-
-Everything is logged to `LOGFILE="/var/log/omero_upload.log"`.
-
-## Planned upcoming features
-
-- Decouple time-gated search of accompanying `README.html` and `elabftw-metadata.json`
-- Support for `Projects`, `Screens` and `Plates`
-- If Metafold gains significant traction --> Integrate functionality into [W-IDM_OmeroImporterPy](https://github.com/WU-BIMAC/W-IDM_OmeroImporterPy)
+- `parser.py`: scans a watch tree and generates an import transfer file.
+- `OMERO_import.py`: imports the generated transfer file into OMERO.
+- `parser_design.md`: parser design notes and implemented rule behaviour.
+- `EXAMPLE_run-import.ps1`: PowerShell automation template.
+- `EXAMPLE.import.json`: example transfer file structure.
+- `EXAMPLE.credentials_auto_import.json`: credentials-file structure.
+- `Metafold_example-metadata.json`: example Metafold sidecar structure.
 
 ## Prerequisites
 
-#### OMERO server Linux:
+- Python environment containing the OMERO Python client.
+- Network access from the machine running the importer to the OMERO server and
+	the source files.
+- An OMERO account with administrator permission to impersonate target users.
+- A credentials JSON file, kept somewhere safe:
 
-- Kernel: 4.11+ (preferably 5.4+ for stability)
-- Coreutils: 8.31+
-- jq
-- NFS client: nfs-common with NFSv4.2 support
-- CIFS client: cifs-utils 6.8+
+	```json
+	{
+		"user": "auto_import",
+		"password": "replace-with-a-secret"
+	}
+	```
 
-#### File Share server:
+`OMERO_import.py` currently uses the server host and port defined by its `HOST`
+and `PORT` constants. Adjust them for the target OMERO installation.
 
-- NFS Server: NFSv4.2 support + birth-time-capable filesystem
-- CEPHFS/CIFS/SMB Server: SMB 2.0+ with timestamp preservation
+## Quick start
 
-## Distinction from other Automatic Importers:
+Set the credentials and importer-log locations, then run the parser followed by
+the importer. The parser output may be located outside the scanned tree, but it
+is commonly stored in the base directory.
 
-### OMERO.dropbox
+```powershell
+$python = "C:\path\to\omero-venv\python.exe"
+$basePath = "E:\PROJECTS\AUTOUPLOAD"
+$transfer_file = "E:\PROJECTS\AUTOUPLOAD\import.json"
+$parserLog = "E:\PROJECTS\AUTOUPLOAD\Logs\parser.log"
 
-- is not feasible for network shares, as it relies on OS-level file system events which are not reliable for mounted file shares
+$env:OMERO_CREDENTIALS = "C:\secure\credentials_auto_import.json"
+$env:OMERO_IMPORT_LOG_DIR = "E:\PROJECTS\AUTOUPLOAD\Logs"
 
-### omero_autoimport
+& $python .\parser.py $basePath $transfer_file --log-file $parserLog --metafold fallback
+if ($LASTEXITCODE -ne 0) {
+		throw "Parser failed with exit code $LASTEXITCODE"
+}
 
-https://github.com/erickmartins/omero_autoimport
+& $python .\OMERO_import.py $transfer_file
+if ($LASTEXITCODE -ne 0) {
+		throw "Importer failed with exit code $LASTEXITCODE"
+}
+```
 
-- relies on difference in `mtime` therefore not aligned with the user intuition, which is better captured by `birthtime`
+For unattended operation, schedule this wrapper at an interval appropriate for
+your setup. Ensure overlapping runs cannot import the same files
+concurrently.
 
-### W-IDM_OmeroImporterPy
+## Parser
 
-https://github.com/WU-BIMAC/W-IDM_OmeroImporterPy
+Run the parser directly:
 
-- has a rigid Project>Dataset>Images directory structure
-- almost full functionality match
-- keeps a record of file paths that have already been imported --> independent of file metadata which might be tricky to get
-- the setup is a bit more complex with preparation of metadata.xlsx/.csv files
+```text
+python parser.py BASE_PATH OUTPUT_JSON [--log-file LOG_FILE] [--metafold MODE]
+```
+
+`MODE` is one of:
+
+- `fallback` (default): use valid Metafold metadata when available; otherwise
+	derive metadata from the folder path.
+- `only`: include only files with a valid Metafold sidecar.
+- `ignore`: skip files in directories containing a Metafold sidecar; parse files
+	in all other directories from their paths.
+
+The parser ignores rule files and `*-metadata.json` sidecars as import
+candidates. It writes `in-place: false`, empty `Tag` arrays, and empty
+`kv-pair` objects for every file in this first implementation.
+
+### Folder-derived targets
+
+The expected minimum path below the base directory is:
+
+```text
+<group>/<user>/<dataset>/<file>
+```
+
+For example, `E:\PROJECTS\AUTOUPLOAD\test_01\wendtj\NewDataset\01.tif`
+selects group `test_01`, user `wendtj`, and Dataset `NewDataset`.
+
+When exactly two folders appear between the user and the file, the first is the
+Project and the second is the Dataset:
+
+```text
+<group>/<user>/<project>/<dataset>/<file>
+```
+
+For deeper layouts, exactly one directory must end in `_dataset`; its prefix is
+used as the Dataset identifier. An optional directory ending in `_project`
+supplies the Project identifier. Other intermediate folders are ignored.
+
+## Rule files
+
+Rules apply recursively and may appear at the base directory or any nested
+directory:
+
+- `.omero_import_whitelist.json`
+- `.omero_import_blacklist.json`
+
+Each rule file may contain `folders`, `suffixes`, and `files` arrays. Folder
+and file entries match exact names unless they include regular-expression
+metacharacters. Suffix entries are Python regular expressions matched against
+the full file name. Blacklist matches always take precedence.
+
+Example base whitelist:
+
+```json
+{
+	"folders": ["test_01", "test_02"],
+	"suffixes": ["\\.(czi|tif|tiff)$"],
+	"files": []
+}
+```
+
+Example nested blacklist:
+
+```json
+{
+	"folders": ["archive"],
+	"suffixes": ["\\.ome\\.tiff$"],
+	"files": ["preview.tif"]
+}
+```
+
+Nested suffix and file rules are added to inherited rules. Folder rules decide
+whether traversal enters a directory at that level.
+
+## Metafold metadata
+
+When a single `*-metadata.json` file is next to an import candidate, the parser
+can read OMERO metadata from the JSON node:
+
+```json
+["metafold_integration"].["external_links"].["omero"]
+```
+
+`dataset_id`, `user_name`, and `group_name` must be present and non-empty.
+`project_id` is optional. Valid sidecar values override the corresponding
+folder-derived group, user, Dataset, and Project values. In `fallback` mode,
+missing, invalid, or ambiguous sidecars cause the parser to use the folder
+layout instead.
+
+## Import transfer file
+
+The parser produces a nested JSON document grouped by OMERO group and user.
+Each Dataset entry has a Dataset identifier, an optional Project identifier,
+and a map of files. See `EXAMPLE.import.json` for the full structure.
+
+Dataset and Project identifiers may be names or OMERO IDs. The importer uses
+numeric identifiers as IDs; otherwise, it resolves an existing object by name
+or creates a missing object in the requested user/group context.
+
+## Logging and failures
+
+- The parser writes to `parser.log` next to the transfer file unless `--log-file` is
+	provided.
+- Set `OMERO_IMPORT_LOG_DIR` to choose the importer log directory. It defaults
+	to `/var/log`.
+- The importer rotates `omero_import.log` daily and retains 14 backups;
+	`omero_import_errors.log` retains 30 backups.
+- Failed OMERO CLI import logs are copied to
+	`<OMERO_IMPORT_LOG_DIR>/omero_import/failed/<run-id>`.
+
+## Current limitations
+
+- The parser uses a fixed 24-hour recency window.
+- Tags and key-value annotations are present in the transfer file format but are not
+	populated by the parser.
+- The importer currently targets Datasets; Screen and Plate workflows are not
+	implemented.
+- Source-path mapping between Windows shares and server mount paths is not yet
+	implemented.
+- The current importer configuration uses linked import transfer (`ln_s`), so
+	the OMERO server must be able to access the source paths.
+
+## Outlook
+- additional flags to set the time window
+- additional SQLite database containing imported paths and resulting OMERO Image IDs
+- Screen/Plate as import target

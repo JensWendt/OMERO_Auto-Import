@@ -1,0 +1,49 @@
+{
+"group":{
+	"test_01":{
+		"user":{
+			"ernst":{
+				"datasets":[
+					{
+						"dataset_identifier":"Wildtype_control",
+						"project_identifier":"Experiment_run_01",
+						"files":{
+							"/mnt/hive/Ernst/Experiment_run_01/Wildtype_control/Snap-2207.czi":{
+								"in-place":true,
+								"Tag":["exampleTag"],
+								"kv-pair":{"foo":"bar"}
+								},
+							"/mnt/hive/Ernst/Experiment_run_01/Wildtype_control/Snap-2208.czi":{
+								"in-place":true,
+								"Tag":[],
+								"kv-pair":{}
+							}
+						}
+					},
+					{
+						"dataset_identifier":"Wildtype_control",
+						"project_identifier":"Experiment_run_02",
+						"files":{
+							"/mnt/hive/Ernst/Experiment_run_02/Wildtype_control/Snap-2207.czi":{
+								"in-place":true,
+								"Tag":[],
+								"kv-pair":{}
+							}
+						}
+					},
+					{
+						"dataset_identifier":"Dataset without Project",
+						"files":{
+							"/mnt/hive/Ernst/Dataset without Project/Snap-2208.czi":{
+								"in-place":true,
+								"Tag":[],
+								"kv-pair":{}
+							}
+						}
+					}
+					]
+					}
+				}
+			}
+		}
+	}

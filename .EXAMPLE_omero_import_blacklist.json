@@ -1,0 +1,12 @@
+{
+	"folders":[
+		"Apotome",
+		"\\S+test\\S+"
+	],
+	"suffixes":[
+		".vmic"
+	],
+	"files":[
+		"\\S+.companion.\\S+"
+	]
+}

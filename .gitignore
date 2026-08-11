@@ -1,0 +1,9 @@
+# specific files
+run-import.ps1
+.omero_import_blacklist.json
+.omero_import_whitelist.json
+parser_design.md
+
+# Folders
+.vscode/
+__pychache__/
