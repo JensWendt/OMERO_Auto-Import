@@ -217,4 +217,4 @@ or creates a missing object in the requested user/group context.
 
 ## Disclaimer
 
-This script was developed with assistance of GitHub Copilot AI, namely model Claude Sonnet 4.
+This script was developed with assistance of GitHub Copilot AI, namely model GPT-5.6 Luna.
