@@ -214,3 +214,7 @@ or creates a missing object in the requested user/group context.
 - additional flags to set the time window
 - additional SQLite database containing imported paths and resulting OMERO Image IDs
 - Screen/Plate as import target
+
+## Disclaimer
+
+This script was developed with assistance of GitHub Copilot AI, namely model Claude Sonnet 4.
