@@ -3,6 +3,7 @@ run-import.ps1
 .omero_import_blacklist.json
 .omero_import_whitelist.json
 parser_design.md
+IMPORT_WORKFLOW_DESIGN.md
 
 # Folders
 .vscode/

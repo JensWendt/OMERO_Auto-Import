@@ -13,7 +13,7 @@ from datetime import datetime
 from importlib import import_module
 
 import omero
-from omero.gateway import BlitzGateway, TagAnnotationWrapper, MapAnnotationWrapper
+from omero.gateway import BlitzGateway, MapAnnotationWrapper, TagAnnotationWrapper
 from omero.model import ProjectI, DatasetI, ImageI, ProjectDatasetLinkI,\
 TagAnnotationI, MapAnnotationI
 from omero.rtypes import rstring
@@ -149,6 +149,14 @@ import_config = {
 ### Helper functions ###
 ########################
 
+def parse_tag_use(value):
+    value = value.strip()
+    if not value:
+        raise argparse.ArgumentTypeError(
+            "tag-use must be 'self', 'all', or an OMERO omeName."
+        )
+    return value
+
 def parse_command_line_args():
     parser = argparse.ArgumentParser(
         description="Import image files described by an OMERO import manifest."
@@ -156,6 +164,15 @@ def parse_command_line_args():
     parser.add_argument(
         "json_path",
         help="Path to the import.json manifest.",
+    )
+    parser.add_argument(
+        "--tag-use",
+        default="self",
+        type=parse_tag_use,
+        help=(
+            "Tag owner selection: 'self' uses tags owned by the target user, "
+            "'all' uses the first matching tag, or provide an OMERO omeName."
+        ),
     )
     return parser.parse_args()
 
@@ -178,6 +195,10 @@ def run_cli_command(command, env, error_message):
 
 def get_id_value(value):
     return value.getValue() if hasattr(value, "getValue") else value
+
+def normalise_import_path(path):
+    """Use one slash style for import-result keys across operating systems."""
+    return str(path).replace("\\", "/")
 
 def parse_import_image_ids(log_path, import_path):
     """Extract imported image IDs from an OMERO CLI import log.
@@ -209,7 +230,7 @@ def parse_import_image_ids(log_path, import_path):
 
     if not log_path.exists():
         logger.warning(f"OMERO CLI image log was not created: {log_path}")
-        return {str(import_path): image_ids}
+        return {normalise_import_path(import_path): image_ids}
 
     for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
         match = image_line_pattern.match(line)
@@ -223,7 +244,7 @@ def parse_import_image_ids(log_path, import_path):
     if not image_ids:
         logger.warning(f"OMERO CLI image log contained no image IDs for {import_path}")
 
-    return {str(import_path): image_ids}
+    return {normalise_import_path(import_path): image_ids}
 
 def forward_omero_cli_log(log_path, logger_method):
     if not log_path.exists():
@@ -252,7 +273,7 @@ def forward_omero_cli_log(log_path, logger_method):
             logger_method(f"OMERO_CLI_{line}")
 
 def preserve_failed_omero_logs(log_dir, run_id):
-    preserved_dir = Path(LOG_DIR) / "omero_import" / "failed" / run_id
+    preserved_dir = Path(LOG_DIR) / "failed_imports" / run_id
     preserved_dir.mkdir(parents=True, exist_ok=True)
     for log_path in log_dir.iterdir():
         if log_path.is_file():
@@ -302,28 +323,8 @@ def get_unique_dataset_by_name(conn, name, project_id=None):
     )
     return dataset
 
-def dataset_has_project_parent(conn, dataset):
-    dataset_id = get_id_value(dataset.getId())
-    parent_projects = list(
-        conn.getObjects("Project", opts={"dataset": dataset_id})
-    )
-    if parent_projects:
-        logger.info(
-            f"Dataset '{getattr(dataset.getName(), '_val', dataset.getName())}' "
-            f"(ID {dataset_id}) has {len(parent_projects)} Project parent(s)."
-        )
-        return True
-    return False
-
-def resolve_standalone_dataset_by_name(conn, name):
-    dataset = get_unique_dataset_by_name(conn, name)
-    if dataset is not None and dataset_has_project_parent(conn, dataset):
-        logger.info(
-            f"Dataset '{name}' is linked to a Project; a new standalone "
-            "Dataset will be created."
-        )
-        return None
-    return dataset
+def resolve_dataset_without_project_by_name(conn, name):
+    return get_unique_dataset_by_name(conn, name)
 
 def ensure_dataset_linked_to_project(conn, project, dataset):
     project_id = get_id_value(project.getId())
@@ -393,6 +394,108 @@ def extract_dataset_project_pairs(json_data):
                 })
 
     return dataset_project_pairs
+
+def merge_user_data(user_data, existing_user_data):
+    """Merge datasets when multiple manifest names resolve to one OMERO user."""
+    if existing_user_data is None:
+        return user_data
+    existing_user_data.setdefault("datasets", []).extend(
+        user_data.get("datasets", [])
+    )
+    return existing_user_data
+
+def normalise_annotation_metadata(tags, key_value_pairs):
+    """Validate manifest annotation metadata and convert values to strings."""
+    if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
+        raise ValueError("'Tag' must be a list of strings.")
+    if not isinstance(key_value_pairs, dict):
+        raise ValueError("'kv-pair' must be a JSON object.")
+
+    normalised_tags = list(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
+    normalised_kv_pairs = [
+        (str(key), str(value))
+        for key, value in key_value_pairs.items()
+        if str(key).strip()
+    ]
+    return normalised_tags, normalised_kv_pairs
+
+
+def get_or_create_tag_annotation(conn, tag_name, tag_cache, tag_use):
+    """Return a tag selected by owner policy, creating one when needed."""
+    cache_key = (id(conn), tag_name, tag_use)
+    if cache_key in tag_cache:
+        return tag_cache[cache_key]
+
+    matching_tags = list(
+        conn.getObjects("TagAnnotation", attributes={"textValue": tag_name})
+    )
+    if tag_use == "all":
+        eligible_tags = matching_tags
+    else:
+        owner_name = tag_use
+        if tag_use == "self":
+            owner_name = conn.getEventContext().userName
+        eligible_tags = [
+            tag for tag in matching_tags if tag.getDetails().getOwner().getName() == owner_name
+        ]
+
+    if len(eligible_tags) > 1 and tag_use != "all":
+        raise RuntimeError(
+            f"Multiple TagAnnotations found with text '{tag_name}' owned by "
+            f"'{owner_name}'; refusing to choose one."
+        )
+    if eligible_tags:
+        tag = eligible_tags[0]
+    else:
+        tag = TagAnnotationWrapper(conn)
+        tag.setValue(tag_name)
+        tag.save()
+        logger.info(
+            f"Created TagAnnotation '{tag_name}' with ID {tag.getId()} "
+            f"for tag-use '{tag_use}'."
+        )
+
+    tag_cache[cache_key] = tag
+    return tag
+
+def apply_image_metadata(conn, image_ids, tags, key_value_pairs, tag_cache, tag_use):
+    """Apply manifest tags and key-value pairs to each successfully imported image."""
+    result = {"success": True, "annotated_image_ids": [], "errors": []}
+    try:
+        tags, key_value_pairs = normalise_annotation_metadata(tags, key_value_pairs)
+        resolved_tags = [
+            get_or_create_tag_annotation(conn, tag_name, tag_cache, tag_use)
+            for tag_name in tags
+        ]
+    except Exception as error:
+        logger.exception(f"Could not prepare manifest annotations: {error}")
+        result["success"] = False
+        result["errors"].append({"error": str(error)})
+        return result
+    if not tags and not key_value_pairs:
+        return result
+
+    for image_id in image_ids:
+        try:
+            image = conn.getObject("Image", image_id)
+            if image is None:
+                raise RuntimeError(f"Image ID {image_id} was not found after import.")
+            for tag in resolved_tags:
+                image.linkAnnotation(tag)
+            if key_value_pairs:
+                map_annotation = MapAnnotationWrapper(conn)
+                map_annotation.setValue(key_value_pairs)
+                map_annotation.save()
+                image.linkAnnotation(map_annotation)
+            result["annotated_image_ids"].append(image_id)
+            logger.info(f"Applied manifest annotations to Image ID {image_id}.")
+        except Exception as error:
+            logger.exception(f"Could not apply manifest annotations to Image ID {image_id}: {error}")
+            result["errors"].append({"image_id": image_id, "error": str(error)})
+
+    result["success"] = not result["errors"]
+    result["annotated_image_count"] = len(result["annotated_image_ids"])
+    return result
 
 def import_to_omero(target_conn, file_path, target_id, target_type="dataset", config=None, transfer_type="ln_s", run_id=None):
     if config is None:
@@ -478,7 +581,7 @@ def import_to_omero(target_conn, file_path, target_id, target_type="dataset", co
 ### Main function ###
 #####################
 
-def main(json_file_path):
+def main(json_file_path, tag_use="self"):
     run_id = create_run_id()
     logger.extra["run_id"] = run_id
     logger.info("Starting importer run.")
@@ -530,40 +633,72 @@ def main(json_file_path):
             logger.error(message)
             raise RuntimeError(message)
 
-    for group_name, user_name in users:
-        params = omero.sys.ParametersI()
-        params.map = {"user_name": rstring(user_name)}
-        query = (
-            "SELECT user FROM Experimenter user "
-            "WHERE user.omeName = :user_name"
-        )
-        result = query_service.findByQuery(query, params)
-        if result is None:
-            parts = re.split(r"[ ,_-]+", user_name)
-            if len(parts) <= 1:
-                raise RuntimeError(f"User '{user_name}' does not exist on the OMERO server.")
-            params.map = {"first_name": rstring(parts[0]), "last_name": rstring(parts[-1])}
+    resolved_users = []
+    for group_name, requested_user_name in users:
+        try:
+            params = omero.sys.ParametersI()
+            params.map = {"user_name": rstring(requested_user_name)}
             query = (
                 "SELECT user FROM Experimenter user "
-                "WHERE user.firstName = :first_name AND user.lastName = :last_name"
+                "WHERE user.omeName = :user_name"
             )
-            second_result = query_service.findByQuery(query, params)
-            if second_result is None:
-                raise RuntimeError(f"User '{user_name}' does not exist on the OMERO server.")
-            new_user_name = second_result.omeName.getValue()
-            logger.info(
-                f"User '{user_name}' found by full name. Replacing with omeName '{new_user_name}'."
-            )
-            json_data['group'][group_name]['user'][new_user_name] = (
-                json_data['group'][group_name]['user'].pop(user_name)
-            )
-            users = [
-                (group, new_user_name) if (group, uname) == (group_name, user_name)
-                else (group, uname)
-                for group, uname in users
-            ]
+            result = query_service.findByQuery(query, params)
+            resolved_user_name = requested_user_name
+            if result is None:
+                user_name_suffix = requested_user_name.rsplit("_", 1)[-1]
+                if user_name_suffix != requested_user_name and user_name_suffix:
+                    params.map = {"user_name": rstring(user_name_suffix)}
+                    result = query_service.findByQuery(query, params)
+                    if result is not None:
+                        resolved_user_name = result.omeName.getValue()
+                        logger.info(
+                            f"User '{requested_user_name}' resolved from underscore suffix "
+                            f"to omeName '{resolved_user_name}'."
+                        )
 
-    for group_name, user_name in users:
+            if result is None:
+                parts = re.split(r"[ ,_-]+", requested_user_name)
+                if len(parts) <= 1:
+                    raise RuntimeError(
+                        f"User '{requested_user_name}' does not exist on the OMERO server."
+                    )
+                params.map = {
+                    "first_name": rstring(parts[0]),
+                    "last_name": rstring(parts[-1]),
+                }
+                query = (
+                    "SELECT user FROM Experimenter user "
+                    "WHERE user.firstName = :first_name AND user.lastName = :last_name"
+                )
+                result = query_service.findByQuery(query, params)
+                if result is None:
+                    raise RuntimeError(
+                        f"User '{requested_user_name}' does not exist on the OMERO server."
+                    )
+                resolved_user_name = result.omeName.getValue()
+                logger.info(
+                    f"User '{requested_user_name}' found by full name. "
+                    f"Replacing with omeName '{resolved_user_name}'."
+                )
+
+            if resolved_user_name != requested_user_name:
+                user_data = json_data['group'][group_name]['user'].pop(
+                    requested_user_name
+                )
+                json_data['group'][group_name]['user'][resolved_user_name] = merge_user_data(
+                    user_data,
+                    json_data['group'][group_name]['user'].get(resolved_user_name),
+                )
+            resolved_users.append((group_name, resolved_user_name))
+        except Exception as error:
+            logger.error(
+                f"Skipping user '{requested_user_name}' in group '{group_name}': {error}",
+                exc_info=True,
+            )
+            json_data['group'][group_name]['user'].pop(requested_user_name, None)
+
+    users = []
+    for group_name, user_name in resolved_users:
         params = omero.sys.ParametersI()
         params.map = {"group_name": rstring(group_name), "user_name": rstring(user_name)}
         query = (
@@ -572,12 +707,18 @@ def main(json_file_path):
             "JOIN FETCH membership.parent grp "
             "WHERE grp.name = :group_name AND user.omeName = :user_name"
         )
-        if query_service.findByQuery(query, params) is None:
-            message = f"User '{user_name}' is not in group '{group_name}'."
-            logger.error(message)
-            raise RuntimeError(message)
+        try:
+            if query_service.findByQuery(query, params) is None:
+                raise RuntimeError(f"User '{user_name}' is not in group '{group_name}'.")
+            users.append((group_name, user_name))
+        except Exception as error:
+            logger.error(
+                f"Skipping user '{user_name}' in group '{group_name}' during membership validation: {error}",
+                exc_info=True,
+            )
+            json_data['group'][group_name]['user'].pop(user_name, None)
 
-    logger.info("All groups and users exist on the OMERO server.")
+    logger.info("Validated %d user/group memberships; skipped invalid users.", len(users))
 
 # Validate that all datasets and projects exist in the correct relation on the OMERO server
     dataset_project_pairs = extract_dataset_project_pairs(json_data)
@@ -602,7 +743,7 @@ def main(json_file_path):
             project_id = project.getId() if project is not None else None
             dataset_is_numeric = str(dataset_identifier).strip().isdecimal()
             if project is None and not dataset_is_numeric:
-                dataset = resolve_standalone_dataset_by_name(
+                dataset = resolve_dataset_without_project_by_name(
                     target_conn, dataset_identifier
                 )
             else:
@@ -631,6 +772,7 @@ def main(json_file_path):
 
 # parse the metadata from the JSON data and perform the import for each filepath
     import_records = []
+    tag_cache = {}
     for target_group, group_data in json_data.get("group", {}).items():
         for target_user, user_data in group_data.get("user", {}).items():
             pair = {"group": target_group, "user": target_user}
@@ -666,7 +808,9 @@ def main(json_file_path):
                                 target_id=dataset_identifier,
                                 target_type="dataset",
                                 config=import_config,
-                                transfer_type="ln_s",
+                                transfer_type=(
+                                    "ln_s" if import_record["in_place"] else "upload"
+                                ),
                                 run_id=run_id,
                             )
                         except Exception:
@@ -684,12 +828,36 @@ def main(json_file_path):
                         import_record["image_id_dict"] = result["image_id_dict"]
                         import_record["success"] = result["success"]
                         import_record["return_code"] = result["return_code"]
-                        import_records.append(import_record)
                         if not result["success"]:
                             logger.error(
                                 f"Import failed for '{image_path}' in Dataset {dataset_identifier}."
                             )
+                            import_records.append(import_record)
                             continue
+                        image_ids = result["image_id_dict"].get(
+                            normalise_import_path(image_path), []
+                        )
+                        if image_ids:
+                            import_record["annotation_status"] = apply_image_metadata(
+                                target_conn,
+                                image_ids,
+                                tags,
+                                key_value_pairs,
+                                tag_cache,
+                                tag_use,
+                            )
+                        else:
+                            logger.warning(
+                                f"Import succeeded for '{image_path}' but returned no image IDs; "
+                                "manifest annotations were not applied."
+                            )
+                            import_record["annotation_status"] = {
+                                "success": False,
+                                "annotated_image_ids": [],
+                                "annotated_image_count": 0,
+                                "errors": [{"error": "Import returned no image IDs."}],
+                            }
+                        import_records.append(import_record)
                         logger.info(
                             f"Import completed for '{image_path}'; image IDs: {result['image_id_dict']}"
                         )
@@ -701,7 +869,7 @@ def main(json_file_path):
 if __name__ == "__main__":
     command_line_args = parse_command_line_args()
     try:
-        main(command_line_args.json_path)
+        main(command_line_args.json_path, command_line_args.tag_use)
     except Exception:
         logger.exception("Importer terminated unexpectedly")
         logging.shutdown()

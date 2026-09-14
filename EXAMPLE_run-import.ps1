@@ -11,7 +11,7 @@ $parser_log = "E:\PROJECTS\AUTOUPLOAD\Logs"
 $env:OMERO_IMPORT_LOG_DIR = "E:\PROJECTS\AUTOUPLOAD\Logs"
 $env:OMERO_CREDENTIALS = "C:\Users\admin\credentials_auto_in-place_import.json"
 
-& $python $parser $basePath $transfer_file $parser_log
+& $python $parser $basePath $transfer_file --log-file $parser_log
 if ($LASTEXITCODE -ne 0) {
     throw "Parser failed with exit code $LASTEXITCODE"
 }

@@ -30,7 +30,8 @@ metadata sidecars, or from both.
 
 - `parser.py`: scans a watch tree and generates an import transfer file.
 - `OMERO_import.py`: imports the generated transfer file into OMERO.
-- `parser_design.md`: parser design notes and implemented rule behaviour.
+- `IMPORT_WORKFLOW_DESIGN.md`: consolidated parser/importer design baseline for
+	future maintenance and implementation work.
 - `EXAMPLE_run-import.ps1`: PowerShell automation template.
 - `EXAMPLE.import.json`: example transfer file structure.
 - `EXAMPLE.credentials_auto_import.json`: credentials-file structure.
@@ -74,7 +75,7 @@ if ($LASTEXITCODE -ne 0) {
 		throw "Parser failed with exit code $LASTEXITCODE"
 }
 
-& $python .\OMERO_import.py $transfer_file
+& $python .\OMERO_import.py $transfer_file --tag-use self
 if ($LASTEXITCODE -ne 0) {
 		throw "Importer failed with exit code $LASTEXITCODE"
 }
@@ -136,8 +137,8 @@ directory:
 
 Each rule file may contain `folders`, `suffixes`, and `files` arrays. Folder
 and file entries match exact names unless they include regular-expression
-metacharacters. Suffix entries are Python regular expressions matched against
-the full file name. Blacklist matches always take precedence.
+metacharacters which then gets interpreted as regular expression patterns. Suffix entries are Python regular expressions matched against
+the full file name. **Blacklist matches always take precedence over whitelist matches and sub-level matches always trump top-level matches**.
 
 Example base whitelist:
 
@@ -187,6 +188,22 @@ Dataset and Project identifiers may be names or OMERO IDs. The importer uses
 numeric identifiers as IDs; otherwise, it resolves an existing object by name
 or creates a missing object in the requested user/group context.
 
+## Tag selection
+
+The importer applies each file entry's `Tag` and `kv-pair` values to every
+successfully imported image. Use `--tag-use` to select a pre-existing tag when
+multiple users own tags with the same text:
+
+- `self` (default): use a tag owned by the target user; create one for that
+	user when no matching tag exists.
+- `all`: use the first tag returned by OMERO, regardless of owner; create a tag
+	for the target user only when no matching tag exists.
+- `<omeName>`: use a tag owned by that specified OMERO user; create a tag for
+	the target user when no matching tag exists.
+
+For example, `python OMERO_import.py import.json --tag-use jane` reuses tags
+owned by the OMERO user `jane` when available.
+
 ## Logging and failures
 
 - The parser writes to `parser.log` next to the transfer file unless `--log-file` is
@@ -196,7 +213,7 @@ or creates a missing object in the requested user/group context.
 - The importer rotates `omero_import.log` daily and retains 14 backups;
 	`omero_import_errors.log` retains 30 backups.
 - Failed OMERO CLI import logs are copied to
-	`<OMERO_IMPORT_LOG_DIR>/omero_import/failed/<run-id>`.
+	`<OMERO_IMPORT_LOG_DIR>/failed_imports/<run-id>`.
 
 ## Current limitations
 
@@ -207,8 +224,9 @@ or creates a missing object in the requested user/group context.
 	implemented.
 - Source-path mapping between Windows shares and server mount paths is not yet
 	implemented.
-- The current importer configuration uses linked import transfer (`ln_s`), so
-	the OMERO server must be able to access the source paths.
+- Files marked `in-place: true` use linked import transfer (`ln_s`), so the
+	OMERO server must be able to access those source paths. Files marked
+	`in-place: false` use normal upload transfer.
 
 ## Outlook
 - additional flags to set the time window
