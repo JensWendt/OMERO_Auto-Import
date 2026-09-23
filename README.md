@@ -262,6 +262,22 @@ failed source paths with concise reasons. SMTP passwords are not stored in this
 repository or in the OMERO credentials file; provide them through the process
 environment or an operating-system secret-management mechanism.
 
+Before invoking the OMERO import command for each source file, the importer
+checks its size and modification time, waits two seconds, and checks again. If
+either value changed, it repeats the check until the file is stable. The wait
+is bounded by 30 seconds by default; a file that continues changing is treated
+as a failed import and is reported in the normal failure summary. Override the
+defaults with:
+
+```powershell
+$env:OMERO_FILE_STABILITY_INTERVAL = "2"
+$env:OMERO_FILE_STABILITY_MAX_WAIT = "30"
+```
+
+This is a practical safeguard against ordinary copies still in progress. It
+cannot prove that a producer will never reopen or modify the file later, so
+the existing OMERO checksum validation remains valuable as the final check.
+
 ## Current limitations
 
 - The parser uses a fixed 24-hour recency window.

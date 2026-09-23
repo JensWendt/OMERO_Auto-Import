@@ -8,6 +8,7 @@ import re
 import argparse
 import smtplib
 import ssl
+import time
 from email.message import EmailMessage
 from pathlib import Path
 import logging
@@ -761,6 +762,41 @@ def apply_image_metadata(conn, image_ids, tags, key_value_pairs, tag_cache, tag_
     result["annotated_image_count"] = len(result["annotated_image_ids"])
     return result
 
+def wait_for_file_stability(file_path):
+    """Wait until a file's size and modification time remain unchanged."""
+    interval = float(os.getenv("OMERO_FILE_STABILITY_INTERVAL", "2"))
+    max_wait = float(os.getenv("OMERO_FILE_STABILITY_MAX_WAIT", "20"))
+    if interval <= 0 or max_wait < interval:
+        raise ValueError(
+            "OMERO_FILE_STABILITY_INTERVAL must be positive and no greater than "
+            "OMERO_FILE_STABILITY_MAX_WAIT."
+        )
+
+    file_path = Path(file_path)
+    start_time = time.monotonic()
+    while True:
+        if not file_path.is_file():
+            raise FileNotFoundError(f"Import source is not a regular file: {file_path}")
+        initial_stat = file_path.stat()
+        time.sleep(interval)
+        final_stat = file_path.stat()
+        if (
+            initial_stat.st_size == final_stat.st_size
+            and initial_stat.st_mtime_ns == final_stat.st_mtime_ns
+        ):
+            logger.info("Import source is stable: %s", file_path)
+            return
+
+        elapsed = time.monotonic() - start_time
+        if elapsed + interval > max_wait:
+            raise RuntimeError(
+                f"Import source continued changing for {max_wait:g} seconds: {file_path}"
+            )
+        logger.info(
+            "Import source changed while waiting; checking again: %s",
+            file_path,
+        )
+
 def import_to_omero(target_conn, file_path, target_id, target_type="dataset", config=None, transfer_type="ln_s", run_id=None):
     if config is None:
         config = {}
@@ -770,6 +806,7 @@ def import_to_omero(target_conn, file_path, target_id, target_type="dataset", co
 
     file_path = Path(file_path)
     logger.info(f"Starting import to OMERO - File: {file_path}, Target: {target_type} ({target_id})")
+    wait_for_file_stability(file_path)
     with tempfile.TemporaryDirectory(prefix=f"omero-import_{run_id}_") as temp_dir:
         temp_dir = Path(temp_dir)
         import_log_path = temp_dir / "import.log"
