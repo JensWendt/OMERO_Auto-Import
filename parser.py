@@ -4,7 +4,9 @@ import json
 import logging
 import os
 import re
+import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 
 #########
@@ -19,6 +21,7 @@ LOGGER = logging.getLogger("omero_import_parser")
 MAX_AGE = 24 * 60 * 60 #in seconds
 CONTROL_FILE_NAMES = {".omero_import_whitelist.json", ".omero_import_blacklist.json"}
 METADATA_FILE_SUFFIX = "-metadata.json"
+TRANSFER_FILE_NAME = "import.json"
 REGEX_META_PATTERN = re.compile(r"[.^$*+?{}\[\]\\|()]")
 RULE_KEY_MISSING = object()
 
@@ -517,17 +520,81 @@ class ImportParser:
 			)
 
 
-def generate_import_json(base_path, output_path, metafold_mode="fallback"):
-	"""Scan ``base_path`` and write the generated manifest to ``output_path``."""
+def _transfer_name_parts():
+	transfer_path = Path(TRANSFER_FILE_NAME)
+	return transfer_path.stem, transfer_path.suffix
+
+
+def _output_directory(path_to_output_json):
+	output_path = Path(_strip_surrounding_quotes(path_to_output_json)).expanduser()
+	if output_path.name == TRANSFER_FILE_NAME:
+		return output_path.parent
+	if output_path.suffix:
+		raise ParserError(
+			f"Output path must be a directory or end with {TRANSFER_FILE_NAME}: {output_path}"
+		)
+	return output_path
+
+
+def _transfer_manifest_path(output_directory, now=None):
+	prefix, suffix = _transfer_name_parts()
+	now = datetime.now() if now is None else now
+	return output_directory / f"{prefix}_{now.strftime('%Y-%m-%dT%H-%M')}{suffix}"
+
+
+def generate_import_json(base_path, path_to_output_json, metafold_mode="fallback", now=None):
+	"""Scan ``base_path`` and atomically publish a timestamped transfer manifest."""
 	parser = ImportParser(base_path, metafold_mode=metafold_mode)
 	manifest = parser.parse()
-	output_path = Path(output_path).expanduser()
-	output_path.parent.mkdir(parents=True, exist_ok=True)
-	with output_path.open("w", encoding="utf-8") as output_file:
-		json.dump(manifest, output_file, indent=2, ensure_ascii=False)
-		output_file.write("\n")
+	if not manifest["group"]:
+		LOGGER.info("No files were accepted; no transfer manifest was written.")
+		return None
+
+	output_directory = _output_directory(path_to_output_json)
+	output_directory.mkdir(parents=True, exist_ok=True)
+	output_path = _transfer_manifest_path(output_directory, now)
+	if output_path.exists():
+		message = (
+			f"Transfer manifest already exists for this minute and will not be overwritten: "
+			f"{output_path}"
+		)
+		LOGGER.error(message)
+		raise ParserError(message)
+
+	temporary_path = None
+	try:
+		with tempfile.NamedTemporaryFile(
+			mode="w",
+			encoding="utf-8",
+			dir=output_directory,
+			prefix=f"{output_path.name}.",
+			suffix=".tmp",
+			delete=False,
+		) as output_file:
+			temporary_path = Path(output_file.name)
+			json.dump(manifest, output_file, indent=2, ensure_ascii=False)
+			output_file.write("\n")
+			output_file.flush()
+			os.fsync(output_file.fileno())
+		os.link(temporary_path, output_path)
+		temporary_path.unlink()
+	except FileExistsError:
+		message = (
+			f"Transfer manifest already exists for this minute and will not be overwritten: "
+			f"{output_path}"
+		)
+		LOGGER.error(message)
+		raise ParserError(message)
+	except OSError as error:
+		raise ParserError(f"Could not write transfer manifest {output_path}: {error}")
+	finally:
+		if temporary_path is not None:
+			try:
+				temporary_path.unlink(missing_ok=True)
+			except OSError:
+				pass
 	LOGGER.info("Wrote import manifest to %s", output_path.absolute())
-	return manifest
+	return output_path
 
 
 def parse_command_line_args():
@@ -535,7 +602,10 @@ def parse_command_line_args():
 		description="Generate an OMERO import manifest from a watch-folder tree."
 	)
 	parser.add_argument("base_path", help="Base directory to scan.")
-	parser.add_argument("output_json", help="Path for the generated import.json.")
+	parser.add_argument(
+		"path_to_output_json",
+		help="Directory for timestamped transfer files, or a path ending in import.json.",
+	)
 	parser.add_argument(
 		"--log-file",
 		help="Path for the parser log; defaults to parser.log beside output_json.",
@@ -549,21 +619,21 @@ def parse_command_line_args():
 	return parser.parse_args()
 
 
-def main(base_path, output_json, log_file=None, metafold_mode="fallback"):
-	"""Generate an import manifest and return its parsed dictionary."""
+def main(base_path, path_to_output_json, log_file=None, metafold_mode="fallback"):
+	"""Generate a timestamped import manifest and return its path, if any."""
 	base_path = _strip_surrounding_quotes(base_path)
-	output_json = Path(_strip_surrounding_quotes(output_json)).expanduser()
+	output_directory = _output_directory(path_to_output_json)
 	if log_file is None:
-		log_file = output_json.parent / "parser.log"
+		log_file = output_directory / "parser.log"
 	else:
 		log_file = _strip_surrounding_quotes(log_file)
 	configure_logging(log_file)
 	try:
-		return generate_import_json(base_path, output_json, metafold_mode)
+		return generate_import_json(base_path, output_directory, metafold_mode)
 	finally:
 		logging.shutdown()
 
 
 if __name__ == "__main__":
 	args = parse_command_line_args()
-	main(args.base_path, args.output_json, args.log_file, args.metafold)
+	main(args.base_path, args.path_to_output_json, args.log_file, args.metafold)

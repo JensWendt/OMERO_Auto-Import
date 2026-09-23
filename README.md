@@ -4,8 +4,8 @@ Automated OMERO Import is a two-stage Python workflow for importing recently
 created or copied image files from a watched directory tree into OMERO.
 
 1. `parser.py` scans a base directory, applies local import rules, derives an
-	 OMERO target for each eligible file, and writes an `import.json` transfer file.
-2. `OMERO_import.py` reads that transfer file, validates the requested OMERO
+	 OMERO target for each eligible file, and publishes a timestamped transfer manifest.
+2. `OMERO_import.py` claims the newest ready transfer manifest, validates the requested OMERO
 	 users/groups, creates missing Projects and Datasets when needed, then imports
 	 each file into the resolved Dataset.
 
@@ -64,18 +64,18 @@ is commonly stored in the base directory.
 ```powershell
 $python = "C:\path\to\omero-venv\python.exe"
 $basePath = "E:\PROJECTS\AUTOUPLOAD"
-$transfer_file = "E:\PROJECTS\AUTOUPLOAD\import.json"
+$transferDirectory = "E:\PROJECTS\AUTOUPLOAD\transfer_manifests"
 $parserLog = "E:\PROJECTS\AUTOUPLOAD\Logs\parser.log"
 
 $env:OMERO_CREDENTIALS = "C:\secure\credentials_auto_import.json"
 $env:OMERO_IMPORT_LOG_DIR = "E:\PROJECTS\AUTOUPLOAD\Logs"
 
-& $python .\parser.py $basePath $transfer_file --log-file $parserLog --metafold fallback
+& $python .\parser.py $basePath $transferDirectory --log-file $parserLog --metafold fallback
 if ($LASTEXITCODE -ne 0) {
 		throw "Parser failed with exit code $LASTEXITCODE"
 }
 
-& $python .\OMERO_import.py $transfer_file --tag-use self
+& $python .\OMERO_import.py $transferDirectory --tag-use self
 if ($LASTEXITCODE -ne 0) {
 		throw "Importer failed with exit code $LASTEXITCODE"
 }
@@ -90,7 +90,7 @@ concurrently.
 Run the parser directly:
 
 ```text
-python parser.py BASE_PATH OUTPUT_JSON [--log-file LOG_FILE] [--metafold MODE]
+python parser.py BASE_PATH PATH_TO_OUTPUT_JSON [--log-file LOG_FILE] [--metafold MODE]
 ```
 
 `MODE` is one of:
@@ -104,6 +104,11 @@ python parser.py BASE_PATH OUTPUT_JSON [--log-file LOG_FILE] [--metafold MODE]
 The parser ignores rule files and `*-metadata.json` sidecars as import
 candidates. It writes `in-place: false`, empty `Tag` arrays, and empty
 `kv-pair` objects for every file in this first implementation.
+
+`PATH_TO_OUTPUT_JSON` may be a transfer directory or the legacy path ending in
+`import.json`; in either case, the parser publishes
+`import_YYYY-MM-DDTHH-MM.json` in that directory. A manifest for the same
+minute is never overwritten: the parser logs an error and fails.
 
 ### Folder-derived targets
 
@@ -188,6 +193,14 @@ Dataset and Project identifiers may be names or OMERO IDs. The importer uses
 numeric identifiers as IDs; otherwise, it resolves an existing object by name
 or creates a missing object in the requested user/group context.
 
+Pass the transfer directory to `OMERO_import.py`. It selects the newest valid
+ready manifest matching `import_YYYY-MM-DDTHH-MM.json`, atomically renames it
+to `*_in-process.json`, and ignores unrelated files, temporary files, and
+stale in-process manifests. A fully successful import deletes its claimed
+manifest. Any failed import, missing returned image IDs, or failed annotation
+moves it to `failed_imports/` under the transfer directory. Existing files in
+`failed_imports/` and stale in-process files are never overwritten.
+
 ## Tag selection
 
 The importer applies each file entry's `Tag` and `kv-pair` values to every
@@ -201,12 +214,13 @@ multiple users own tags with the same text:
 - `<omeName>`: use a tag owned by that specified OMERO user; create a tag for
 	the target user when no matching tag exists.
 
-For example, `python OMERO_import.py import.json --tag-use jane` reuses tags
+For example, `python OMERO_import.py transfer_manifests --tag-use jane` reuses tags
 owned by the OMERO user `jane` when available.
 
 ## Logging and failures
 
-- The parser writes to `parser.log` next to the transfer file unless `--log-file` is
+
+- The parser writes to `parser.log` in the transfer directory unless `--log-file` is
 	provided.
 - Set `OMERO_IMPORT_LOG_DIR` to choose the importer log directory. It defaults
 	to `/var/log`.

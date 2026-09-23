@@ -123,7 +123,7 @@ logger = ContextAdapter(base_logger, build_logger_context(None))
 ### Constants ###
 #################
 
-JSON_FORMAT = "import.json"
+TRANSFER_FILE_NAME = "import.json"
 CREDENTIALS_FILE = os.getenv("OMERO_CREDENTIALS", "/opt/omero/credentials_auto_in-place_import.json")
 HOST = '10.14.28.44'
 PORT = 4064
@@ -163,7 +163,7 @@ def parse_command_line_args():
     )
     parser.add_argument(
         "json_path",
-        help="Path to the import.json manifest.",
+        help="Directory containing timestamped import transfer manifests.",
     )
     parser.add_argument(
         "--tag-use",
@@ -175,6 +175,88 @@ def parse_command_line_args():
         ),
     )
     return parser.parse_args()
+
+def transfer_name_parts():
+    transfer_path = Path(TRANSFER_FILE_NAME)
+    return transfer_path.stem, transfer_path.suffix
+
+def transfer_manifest_pattern():
+    prefix, suffix = transfer_name_parts()
+    return re.compile(
+        rf"^{re.escape(prefix)}_(?P<timestamp>\d{{4}}-\d{{2}}-\d{{2}}T\d{{2}}-\d{{2}}){re.escape(suffix)}$"
+    )
+
+def select_latest_transfer_manifest(json_path):
+    directory = Path(json_path).expanduser()
+    if not directory.exists():
+        raise FileNotFoundError(f"Transfer manifest directory does not exist: {directory}")
+    if not directory.is_dir():
+        raise NotADirectoryError(f"Transfer manifest path is not a directory: {directory}")
+
+    pattern = transfer_manifest_pattern()
+    candidates = []
+    for path in directory.iterdir():
+        if not path.is_file():
+            continue
+        match = pattern.match(path.name)
+        if match is None:
+            continue
+        try:
+            datetime.strptime(match.group("timestamp"), "%Y-%m-%dT%H-%M")
+        except ValueError:
+            logger.warning("Ignoring transfer manifest with invalid timestamp: %s", path)
+            continue
+        candidates.append(path)
+    if not candidates:
+        raise FileNotFoundError(f"No ready transfer manifests found in: {directory}")
+    # return the newest manifest based on the timestamp in the filename
+    return max(candidates, key=lambda path: path.name)
+
+def claim_transfer_manifest(manifest_path):
+    _, suffix = transfer_name_parts()
+    claimed_path = manifest_path.with_name(
+        f"{manifest_path.stem}_in-process{suffix}"
+    )
+    if claimed_path.exists():
+        raise RuntimeError(f"Transfer manifest is already in process: {claimed_path}")
+    try:
+        manifest_path.rename(claimed_path)
+    except OSError as error:
+        raise RuntimeError(
+            f"Could not claim transfer manifest {manifest_path}: {error}"
+        )
+    logger.info("Claimed transfer manifest: %s", claimed_path)
+    return claimed_path
+
+def finalise_transfer_manifest(claimed_path, succeeded):
+    _, suffix = transfer_name_parts()
+    original_name = claimed_path.name.replace("_in-process", "", 1)
+    if succeeded:
+        claimed_path.unlink()
+        logger.info("Deleted successfully processed transfer manifest: %s", claimed_path)
+        return
+
+    failed_directory = claimed_path.parent / "failed_imports"
+    failed_directory.mkdir(parents=True, exist_ok=True)
+    failed_path = failed_directory / original_name
+    if failed_path.exists():
+        raise RuntimeError(
+            f"Failed transfer manifest already exists and will not be overwritten: {failed_path}"
+        )
+    try:
+        claimed_path.rename(failed_path)
+    except OSError as error:
+        raise RuntimeError(
+            f"Could not move failed transfer manifest {claimed_path}: {error}"
+        )
+    logger.warning("Moved failed transfer manifest to: %s", failed_path)
+
+def import_records_succeeded(import_records):
+    return bool(import_records) and all(
+        record.get("success")
+        and record.get("annotation_status", {"success": True}).get("success")
+        for record in import_records
+    )
 
 def run_cli_command(command, env, error_message):
     result = subprocess.run(
@@ -581,7 +663,7 @@ def import_to_omero(target_conn, file_path, target_id, target_type="dataset", co
 ### Main function ###
 #####################
 
-def main(json_file_path, tag_use="self"):
+def _import_manifest(json_file_path, tag_use="self"):
     run_id = create_run_id()
     logger.extra["run_id"] = run_id
     logger.info("Starting importer run.")
@@ -865,11 +947,24 @@ def main(json_file_path, tag_use="self"):
                 target_conn.close()
 
     conn.close()
+    return import_records_succeeded(import_records)
+
+def main(json_path, tag_use="self"):
+    """Claim, import, and finalise the newest ready transfer manifest."""
+    manifest_path = select_latest_transfer_manifest(json_path)
+    claimed_path = claim_transfer_manifest(manifest_path)
+    succeeded = False
+    try:
+        succeeded = _import_manifest(claimed_path, tag_use)
+        return succeeded
+    finally:
+        finalise_transfer_manifest(claimed_path, succeeded)
 
 if __name__ == "__main__":
     command_line_args = parse_command_line_args()
     try:
-        main(command_line_args.json_path, command_line_args.tag_use)
+        if not main(command_line_args.json_path, command_line_args.tag_use):
+            raise RuntimeError("Transfer manifest processing failed and was quarantined.")
     except Exception:
         logger.exception("Importer terminated unexpectedly")
         logging.shutdown()
