@@ -229,6 +229,39 @@ owned by the OMERO user `jane` when available.
 - Failed OMERO CLI import logs are copied to
 	`<OMERO_IMPORT_LOG_DIR>/failed_imports/<run-id>`.
 
+## Email notifications
+
+The importer can send one completion email to each resolved OMERO user after
+their files in a manifest have been processed. It reads the recipient address
+from the user's OMERO `Experimenter` record. Notifications are disabled by
+default and use Python's standard-library SMTP client, so the same setup works
+on Windows, Linux, and macOS without an OS-specific mail command.
+
+After University IT provides the SMTP relay details, configure the importer
+process with these environment variables:
+
+```powershell
+$env:OMERO_EMAIL_ENABLED = "true"
+$env:OMERO_EMAIL_SMTP_HOST = "smtp.university.example"
+$env:OMERO_EMAIL_SMTP_PORT = "587"
+$env:OMERO_EMAIL_SMTP_SECURITY = "starttls" # starttls, ssl, or none
+$env:OMERO_EMAIL_FROM = "omero-import@university.example"
+$env:OMERO_EMAIL_SMTP_USER = "smtp-account" # omit both user and password if unused
+$env:OMERO_EMAIL_SMTP_PASSWORD = "smtp-password"
+```
+
+`OMERO_EMAIL_SMTP_HOST` and `OMERO_EMAIL_FROM` are required when email is
+enabled. `OMERO_EMAIL_SMTP_SECURITY` defaults to `starttls`; use `ssl` only
+when the relay expects implicit TLS, or `none` only for a trusted relay that
+does not require transport encryption. SMTP delivery failures and missing OMERO
+email addresses are logged without changing the import result.
+
+Each user receives one plain-text message for all outcomes. It includes file
+and image totals, up to 20 successfully imported source paths, and up to 10
+failed source paths with concise reasons. SMTP passwords are not stored in this
+repository or in the OMERO credentials file; provide them through the process
+environment or an operating-system secret-management mechanism.
+
 ## Current limitations
 
 - The parser uses a fixed 24-hour recency window.

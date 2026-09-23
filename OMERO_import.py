@@ -6,6 +6,9 @@ import tempfile
 import json
 import re
 import argparse
+import smtplib
+import ssl
+from email.message import EmailMessage
 from pathlib import Path
 import logging
 import logging.config
@@ -13,7 +16,7 @@ from datetime import datetime
 from importlib import import_module
 
 import omero
-from omero.gateway import BlitzGateway, MapAnnotationWrapper, TagAnnotationWrapper
+from omero.gateway import BlitzGateway, ExperimenterWrapper, MapAnnotationWrapper, TagAnnotationWrapper
 from omero.model import ProjectI, DatasetI, ImageI, ProjectDatasetLinkI,\
 TagAnnotationI, MapAnnotationI
 from omero.rtypes import rstring
@@ -257,6 +260,185 @@ def import_records_succeeded(import_records):
         and record.get("annotation_status", {"success": True}).get("success")
         for record in import_records
     )
+
+def environment_boolean(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    if value.strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    if value.strip().lower() in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be true or false.")
+
+def email_configuration():
+    if not environment_boolean("OMERO_EMAIL_ENABLED"):
+        return None
+
+    configuration = {
+        "host": os.getenv("OMERO_EMAIL_SMTP_HOST", "").strip(),
+        "port": int(os.getenv("OMERO_EMAIL_SMTP_PORT", "587")),
+        "security": os.getenv("OMERO_EMAIL_SMTP_SECURITY", "starttls").strip().lower(),
+        "username": os.getenv("OMERO_EMAIL_SMTP_USER", ""),
+        "password": os.getenv("OMERO_EMAIL_SMTP_PASSWORD", ""),
+        "sender": os.getenv("OMERO_EMAIL_FROM", "").strip(),
+    }
+    if not configuration["host"] or not configuration["sender"]:
+        raise ValueError(
+            "OMERO_EMAIL_SMTP_HOST and OMERO_EMAIL_FROM are required when "
+            "OMERO_EMAIL_ENABLED is true."
+        )
+    if configuration["security"] not in {"starttls", "ssl", "none"}:
+        raise ValueError(
+            "OMERO_EMAIL_SMTP_SECURITY must be starttls, ssl, or none."
+        )
+    if bool(configuration["username"]) != bool(configuration["password"]):
+        raise ValueError(
+            "OMERO_EMAIL_SMTP_USER and OMERO_EMAIL_SMTP_PASSWORD must be set together."
+        )
+    return configuration
+
+def import_record_succeeded(import_record):
+    return (
+        import_record.get("success")
+        and import_record.get("annotation_status", {"success": True}).get("success")
+    )
+
+def import_record_failure_reason(import_record):
+    if import_record.get("error"):
+        return import_record["error"]
+    annotation_errors = import_record.get("annotation_status", {}).get("errors", [])
+    if annotation_errors:
+        return annotation_errors[0].get("error", "Annotation failed.")
+    if import_record.get("return_code") is not None:
+        return f"OMERO CLI returned exit code {import_record['return_code']}."
+    return "Import did not complete successfully."
+
+def summarise_import_records(import_records):
+    summaries = {}
+    for import_record in import_records:
+        key = (import_record["target_group"], import_record["target_username"])
+        summary = summaries.setdefault(key, {
+            "group": key[0],
+            "username": key[1],
+            "total_files": 0,
+            "successful_files": [],
+            "failed_files": [],
+            "image_count": 0,
+        })
+        summary["total_files"] += 1
+        if import_record_succeeded(import_record):
+            summary["successful_files"].append(import_record["image_path"])
+            summary["image_count"] += sum(
+                len(image_ids) for image_ids in import_record.get("image_id_dict", {}).values()
+            )
+        else:
+            summary["failed_files"].append((
+                import_record["image_path"],
+                import_record_failure_reason(import_record),
+            ))
+    return list(summaries.values())
+
+def limited_lines(items, limit, formatter):
+    lines = [formatter(item) for item in items[:limit]]
+    if len(items) > limit:
+        lines.append(f"... {len(items) - limit} additional entries omitted.")
+    return lines
+
+def completion_email_message(recipient, sender, summary):
+    failed_count = len(summary["failed_files"])
+    successful_count = len(summary["successful_files"])
+    if failed_count == 0:
+        outcome = "completed successfully"
+    elif successful_count == 0:
+        outcome = "failed"
+    else:
+        outcome = "completed with failures"
+
+    message = EmailMessage()
+    message["To"] = recipient
+    message["From"] = sender
+    message["Subject"] = (
+        f"OMERO import {outcome}: {successful_count}/{summary['total_files']} files, "
+        f"{summary['image_count']} images"
+    )
+    lines = [
+        f"Hello {summary['username']},",
+        "",
+        f"Your OMERO import {outcome}.",
+        f"Group: {summary['group']}",
+        f"Files processed: {summary['total_files']}",
+        f"Files imported successfully: {successful_count}",
+        f"OMERO images created: {summary['image_count']}",
+        f"Failures: {failed_count}",
+    ]
+    if summary["successful_files"]:
+        lines.extend(["", "Imported source files:"])
+        lines.extend(limited_lines(summary["successful_files"], 20, lambda path: f"- {path}"))
+    if summary["failed_files"]:
+        lines.extend(["", "Failed source files:"])
+        lines.extend(limited_lines(
+            summary["failed_files"],
+            10,
+            lambda item: f"- {item[0]}: {item[1]}",
+        ))
+    message.set_content("\n".join(lines) + "\n")
+    return message
+
+def get_experimenter_email(conn, experimenter, username):
+    try:
+        user_wrapper = ExperimenterWrapper(conn, experimenter)
+        email = user_wrapper._obj.getEmail().getValue()
+    except Exception as error:
+        logger.warning("Could not retrieve email for OMERO user '%s': %s", username, error)
+        return None
+    if not email or not email.strip():
+        logger.warning("OMERO user '%s' has no email address; notification skipped.", username)
+        return None
+    return email.strip()
+
+def send_completion_email(configuration, message):
+    smtp_class = smtplib.SMTP_SSL if configuration["security"] == "ssl" else smtplib.SMTP
+    with smtp_class(configuration["host"], configuration["port"], timeout=30) as smtp:
+        if configuration["security"] == "starttls":
+            smtp.ehlo()
+            smtp.starttls(context=ssl.create_default_context())
+            smtp.ehlo()
+        if configuration["username"]:
+            smtp.login(configuration["username"], configuration["password"])
+        smtp.send_message(message)
+
+def send_completion_notifications(conn, resolved_experimenters, import_records):
+    try:
+        configuration = email_configuration()
+    except Exception as error:
+        logger.error("Email notifications are not configured correctly: %s", error)
+        return
+    if configuration is None:
+        logger.info("Email notifications are disabled.")
+        return
+
+    for summary in summarise_import_records(import_records):
+        experimenter = resolved_experimenters.get(summary["username"])
+        if experimenter is None:
+            logger.warning(
+                "No resolved OMERO user object for '%s'; notification skipped.",
+                summary["username"],
+            )
+            continue
+        recipient = get_experimenter_email(conn, experimenter, summary["username"])
+        if recipient is None:
+            continue
+        message = completion_email_message(recipient, configuration["sender"], summary)
+        try:
+            send_completion_email(configuration, message)
+            logger.info("Sent import completion notification to '%s'.", recipient)
+        except Exception as error:
+            logger.error(
+                "Could not send import completion notification to '%s': %s",
+                recipient,
+                error,
+            )
 
 def run_cli_command(command, env, error_message):
     result = subprocess.run(
@@ -716,6 +898,7 @@ def _import_manifest(json_file_path, tag_use="self"):
             raise RuntimeError(message)
 
     resolved_users = []
+    resolved_experimenters = {}
     for group_name, requested_user_name in users:
         try:
             params = omero.sys.ParametersI()
@@ -772,6 +955,7 @@ def _import_manifest(json_file_path, tag_use="self"):
                     json_data['group'][group_name]['user'].get(resolved_user_name),
                 )
             resolved_users.append((group_name, resolved_user_name))
+            resolved_experimenters[resolved_user_name] = result
         except Exception as error:
             logger.error(
                 f"Skipping user '{requested_user_name}' in group '{group_name}': {error}",
@@ -946,6 +1130,7 @@ def _import_manifest(json_file_path, tag_use="self"):
             finally:
                 target_conn.close()
 
+    send_completion_notifications(conn, resolved_experimenters, import_records)
     conn.close()
     return import_records_succeeded(import_records)
 

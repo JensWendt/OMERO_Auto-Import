@@ -10,6 +10,13 @@ $transfer_directory = "E:\PROJECTS\AUTOUPLOAD\"
 $parser_log = "E:\PROJECTS\AUTOUPLOAD\Logs"
 $env:OMERO_IMPORT_LOG_DIR = "E:\PROJECTS\AUTOUPLOAD\Logs"
 $env:OMERO_CREDENTIALS = "C:\Users\admin\credentials_auto_in-place_import.json"
+# Optional SMTP notifications. Leave OMERO_EMAIL_ENABLED unset or false until configured.
+# $env:OMERO_EMAIL_ENABLED = "true"
+# $env:OMERO_EMAIL_SMTP_HOST = "smtp.university.example"
+# $env:OMERO_EMAIL_SMTP_PORT = "587"
+# $env:OMERO_EMAIL_SMTP_SECURITY = "starttls"
+# $env:OMERO_EMAIL_FROM = "omero-import@university.example"
+# Set SMTP credentials through the environment or an OS secret store; do not commit them.
 
 & $python $parser $basePath $transfer_directory --log-file $parser_log --metafold fallback
 if ($LASTEXITCODE -ne 0) {
