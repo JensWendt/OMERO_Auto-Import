@@ -69,6 +69,9 @@ $parserLog = "E:\PROJECTS\AUTOUPLOAD\Logs\parser.log"
 
 $env:OMERO_CREDENTIALS = "C:\secure\credentials_auto_import.json"
 $env:OMERO_IMPORT_LOG_DIR = "E:\PROJECTS\AUTOUPLOAD\Logs"
+# Optional manifest archive locations. Defaults are beside the transfer directory.
+$env:SUCCESS_IMPORT_DIR = "E:\PROJECTS\AUTOUPLOAD\success_imports"
+$env:FAILED_IMPORT_DIR = "E:\PROJECTS\AUTOUPLOAD\failed_imports"
 
 & $python .\parser.py $basePath $transferDirectory --log-file $parserLog --metafold fallback
 if ($LASTEXITCODE -ne 0) {
@@ -196,10 +199,14 @@ or creates a missing object in the requested user/group context.
 Pass the transfer directory to `OMERO_import.py`. It selects the newest valid
 ready manifest matching `import_YYYY-MM-DDTHH-MM.json`, atomically renames it
 to `*_in-process.json`, and ignores unrelated files, temporary files, and
-stale in-process manifests. A fully successful import deletes its claimed
-manifest. Any failed import, missing returned image IDs, or failed annotation
-moves it to `failed_imports/` under the transfer directory. Existing files in
-`failed_imports/` and stale in-process files are never overwritten.
+stale in-process manifests. A fully successful import moves its claimed
+manifest to `SUCCESS_IMPORT_DIR`, changing the suffix to
+`*_successfull.json`. Any failed import, missing returned image IDs, or failed
+annotation moves it to `FAILED_IMPORT_DIR` with its original ready filename.
+When unset, these directories default to `success_imports/` and
+`failed_imports/` under the transfer directory. Existing archive files are
+never overwritten; a collision leaves the claimed manifest in place for
+manual recovery.
 
 ## Tag selection
 

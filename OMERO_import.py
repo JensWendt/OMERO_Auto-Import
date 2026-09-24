@@ -133,6 +133,8 @@ HOST = '10.14.28.44'
 PORT = 4064
 PARALLEL_UPLOAD = 4 #adjust based on your system and network capabilities
 TTL_FOR_IMPORT_CONN = 6000000 # in milliseconds
+SUCCESS_IMPORT_DIR = os.getenv("OMERO_SUCCESS_IMPORT_DIR")
+FAILED_IMPORT_DIR = os.getenv("OMERO_FAILED_IMPORTS_DIR")
 
 sample_import_config = {
     "parallel_upload_per_worker": 4,
@@ -212,7 +214,11 @@ def select_latest_transfer_manifest(json_path):
             continue
         candidates.append(path)
     if not candidates:
-        raise FileNotFoundError(f"No ready transfer manifests found in: {directory}")
+        logger.info(
+            "No ready transfer manifests found in %s; nothing to import.",
+            directory,
+        )
+        return None
     # return the newest manifest based on the timestamp in the filename
     return max(candidates, key=lambda path: path.name)
 
@@ -233,14 +239,31 @@ def claim_transfer_manifest(manifest_path):
     return claimed_path
 
 def finalise_transfer_manifest(claimed_path, succeeded):
-    _, suffix = transfer_name_parts()
     original_name = claimed_path.name.replace("_in-process", "", 1)
     if succeeded:
-        claimed_path.unlink()
-        logger.info("Deleted successfully processed transfer manifest: %s", claimed_path)
+        success_directory = Path(SUCCESS_IMPORT_DIR) if SUCCESS_IMPORT_DIR else (
+            claimed_path.parent / "success_imports"
+        )
+        success_directory.mkdir(parents=True, exist_ok=True)
+        success_path = success_directory / claimed_path.name.replace(
+            "_in-process", "_successfull", 1
+        )
+        if success_path.exists():
+            raise RuntimeError(
+                f"Successful transfer manifest already exists and will not be overwritten: {success_path}"
+            )
+        try:
+            claimed_path.rename(success_path)
+        except OSError as error:
+            raise RuntimeError(
+                f"Could not move successful transfer manifest {claimed_path}: {error}"
+            )
+        logger.info("Archived successfully processed transfer manifest: %s", success_path)
         return
 
-    failed_directory = claimed_path.parent / "failed_imports"
+    failed_directory = Path(FAILED_IMPORT_DIR) if FAILED_IMPORT_DIR else (
+        claimed_path.parent / "failed_imports"
+    )
     failed_directory.mkdir(parents=True, exist_ok=True)
     failed_path = failed_directory / original_name
     if failed_path.exists():
@@ -1174,6 +1197,8 @@ def _import_manifest(json_file_path, tag_use="self"):
 def main(json_path, tag_use="self"):
     """Claim, import, and finalise the newest ready transfer manifest."""
     manifest_path = select_latest_transfer_manifest(json_path)
+    if manifest_path is None:
+        return True
     claimed_path = claim_transfer_manifest(manifest_path)
     succeeded = False
     try:
