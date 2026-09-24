@@ -1,4 +1,5 @@
 import argparse
+import ast
 from importlib.metadata import metadata
 import json
 import logging
@@ -24,6 +25,48 @@ METADATA_FILE_SUFFIX = "-metadata.json"
 TRANSFER_FILE_NAME = "import.json"
 REGEX_META_PATTERN = re.compile(r"[.^$*+?{}\[\]\\|()]")
 RULE_KEY_MISSING = object()
+
+
+def parse_time(value):
+	"""Parse a positive seconds value or a simple arithmetic expression."""
+	try:
+		tree = ast.parse(value, mode="eval")
+	except (SyntaxError, TypeError):
+		raise argparse.ArgumentTypeError(
+			"time must be a positive number of seconds or an arithmetic expression."
+		)
+
+	def evaluate(node):
+		if isinstance(node, ast.Expression):
+			return evaluate(node.body)
+		if isinstance(node, ast.Constant) and isinstance(node.value, int):
+			return node.value
+		if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.FloorDiv)):
+			left = evaluate(node.left)
+			right = evaluate(node.right)
+			if isinstance(node.op, ast.Add):
+				return left + right
+			if isinstance(node.op, ast.Sub):
+				return left - right
+			if isinstance(node.op, ast.Mult):
+				return left * right
+			if right == 0:
+				raise ValueError
+			return left // right
+		if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+			value = evaluate(node.operand)
+			return value if isinstance(node.op, ast.UAdd) else -value
+		raise ValueError
+
+	try:
+		seconds = evaluate(tree)
+	except (ValueError, ZeroDivisionError, RecursionError):
+		raise argparse.ArgumentTypeError(
+			"time must be a positive number of seconds or an arithmetic expression."
+		)
+	if seconds <= 0:
+		raise argparse.ArgumentTypeError("time must be greater than zero.")
+	return seconds
 
 
 def _strip_surrounding_quotes(value):
@@ -542,9 +585,19 @@ def _transfer_manifest_path(output_directory, now=None):
 	return output_directory / f"{prefix}_{now.strftime('%Y-%m-%dT%H-%M')}{suffix}"
 
 
-def generate_import_json(base_path, path_to_output_json, metafold_mode="fallback", now=None):
+def generate_import_json(
+	base_path,
+	path_to_output_json,
+	metafold_mode="fallback",
+	now=None,
+	recent_seconds=MAX_AGE,
+):
 	"""Scan ``base_path`` and atomically publish a timestamped transfer manifest."""
-	parser = ImportParser(base_path, metafold_mode=metafold_mode)
+	parser = ImportParser(
+		base_path,
+		recent_seconds=recent_seconds,
+		metafold_mode=metafold_mode,
+	)
 	manifest = parser.parse()
 	if not manifest["group"]:
 		LOGGER.info("No files were accepted; no transfer manifest was written.")
@@ -616,10 +669,22 @@ def parse_command_line_args():
 		default="fallback",
 		help="Metafold sidecar mode: only requires valid sidecars; ignore skips sidecar files.",
 	)
+	parser.add_argument(
+		"--time",
+		type=parse_time,
+		default=MAX_AGE,
+		help="Maximum file age in seconds; simple arithmetic is supported, e.g. '24*60*60'. Defaults to 86400.",
+	)
 	return parser.parse_args()
 
 
-def main(base_path, path_to_output_json, log_file=None, metafold_mode="fallback"):
+def main(
+	base_path,
+	path_to_output_json,
+	log_file=None,
+	metafold_mode="fallback",
+	recent_seconds=MAX_AGE,
+):
 	"""Generate a timestamped import manifest and return its path, if any."""
 	base_path = _strip_surrounding_quotes(base_path)
 	output_directory = _output_directory(path_to_output_json)
@@ -629,11 +694,22 @@ def main(base_path, path_to_output_json, log_file=None, metafold_mode="fallback"
 		log_file = _strip_surrounding_quotes(log_file)
 	configure_logging(log_file)
 	try:
-		return generate_import_json(base_path, output_directory, metafold_mode)
+		return generate_import_json(
+			base_path,
+			output_directory,
+			metafold_mode,
+			recent_seconds=recent_seconds,
+		)
 	finally:
 		logging.shutdown()
 
 
 if __name__ == "__main__":
 	args = parse_command_line_args()
-	main(args.base_path, args.path_to_output_json, args.log_file, args.metafold)
+	main(
+		args.base_path,
+		args.path_to_output_json,
+		args.log_file,
+		args.metafold,
+		recent_seconds=args.time,
+	)

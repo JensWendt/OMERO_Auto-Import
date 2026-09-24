@@ -19,7 +19,7 @@ $env:OMERO_FAILED_IMPORTS_DIR = "E:\PROJECTS\AUTOUPLOAD\failed_imports"
 # $env:OMERO_EMAIL_FROM = "omero-import@university.example"
 # Set SMTP credentials through the environment or an OS secret store; do not commit them.
 
-& $python $parser $basePath $transfer_directory --log-file $parser_log --metafold fallback
+& $python $parser $basePath $transfer_directory --log-file $parser_log --metafold "fallback" --time "3600"
 if ($LASTEXITCODE -ne 0) {
     throw "Parser failed with exit code $LASTEXITCODE"
 }

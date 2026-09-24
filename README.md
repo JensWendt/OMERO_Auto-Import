@@ -93,8 +93,12 @@ concurrently.
 Run the parser directly:
 
 ```text
-python parser.py BASE_PATH PATH_TO_OUTPUT_JSON [--log-file LOG_FILE] [--metafold MODE]
+python parser.py BASE_PATH PATH_TO_OUTPUT_JSON [--log-file LOG_FILE] [--metafold MODE] [--time SECONDS]
 ```
+
+`--time` sets the maximum file age in seconds and defaults to `86400` (24
+hours). It accepts simple integer arithmetic; quote expressions so they work
+consistently across shells, for example `--time "24*60*60"`.
 
 `MODE` is one of:
 

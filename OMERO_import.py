@@ -129,7 +129,7 @@ logger = ContextAdapter(base_logger, build_logger_context(None))
 
 TRANSFER_FILE_NAME = "import.json"
 CREDENTIALS_FILE = os.getenv("OMERO_CREDENTIALS", "/opt/omero/credentials_auto_in-place_import.json")
-HOST = '10.14.28.44'
+HOST = os.getenv("OMERO_HOST", 'omero.nfdi4bioimage.de')
 PORT = 4064
 PARALLEL_UPLOAD = 4 #adjust based on your system and network capabilities
 TTL_FOR_IMPORT_CONN = 6000000 # in milliseconds
